@@ -1,106 +1,120 @@
-﻿#include <opencv2/opencv.hpp>  
-#include <cv.h>  
-#include <vector>
 #include <iostream>
-
-using namespace std;
+#include <opencv2/opencv.hpp>
+#include <vector>
+#include <omp.h>
 using namespace cv;
-
-int Red = 160, Blue=130;
-int sat = 1;
-Mat CheckColor(Mat &inImg);
-void Draw(Mat &inputImg, Mat foreImg);
-
-int main(){
-	VideoCapture capture("E:\\Purdue\\VS\\C++\\RedCar.avi");
-	while (1){
-		Mat light;
-		capture >> light;
-		if (light.empty()) break;
-		namedWindow("Control", CV_WINDOW_AUTOSIZE);
-		cvCreateTrackbar("Track", "Control", &Red, 10);
-		cvCreateTrackbar("Saturation", "Control", &sat, 10);
-		CheckColor(light);
-		waitKey(1000);
+using namespace std;
+#define THREADS 4
+#define ANGLE_THRE 10
+#define H_RATIO 10
+#define PI 3.14159265358979
+#define PATH "E:\\Purdue\\VS\\C++\\Dji-RM\\testVideo\\5-1.mp4"
+#define bRED true
+#if bRED
+#define COLOR Scalar(0,0,255)
+#else
+#define COLOR Scalar(255,0,0)
+#endif
+Mat clrRng(1, 256, CV_8U);
+float tmpD = -1;
+typedef struct Armor {
+	int id;
+	float w, h;
+	double dx, dy, d, v;
+} Armor;
+Mat Proc(Mat srcImg, Mat &dstImg, Mat & HSV) {
+	Mat Ctr, Brt, Clr, lClr, rClr;
+	uchar *c = clrRng.ptr();
+	for (int i = 0; i < 256; c[i] = saturate_cast<uchar>(pow(i++ / 255.0, 4) * 255.0));
+	LUT(srcImg, clrRng, dstImg);
+	Clr = Brt = Mat::zeros(srcImg.size(), CV_8UC1);
+	cvtColor(dstImg, HSV, COLOR_BGR2HSV);
+	inRange(HSV, Scalar(0, 0, 200), Scalar(200, 200, 255), Brt);
+	if (bRED) {
+		inRange(HSV, Scalar(0, 100, 100), Scalar(10, 255, 255), lClr);
+		inRange(HSV, Scalar(170, 100, 100), Scalar(180, 255, 255), rClr);
+		Clr = lClr | rClr;
 	}
-	return 0;
+	else inRange(HSV, Scalar(120, 100, 100), Scalar(140, 255, 255), Clr);
+	blur((Brt |= Clr), Ctr, Size(3, 3));
+	Canny(Ctr, Ctr, 100, 200);
+	return Ctr;
 }
-
-//Color check for light.
-Mat CheckColor(Mat &inImg){
-	Mat Img;
-	Img.create(inImg.size(), CV_8UC1);
-	Mat multiRGB[3];
-	int a = inImg.channels();
-	float B, G, R;
-	split(inImg, multiRGB);
-	for (int i = 0; i < inImg.rows; i++)
-		for (int j = 0; j < inImg.cols; j++){			
-			B = multiRGB[0].at<uchar>(i, j);
-			G = multiRGB[1].at<uchar>(i, j);
-			R = multiRGB[2].at<uchar>(i, j);
-			float maxValue = max(B,max(G,R));
-			float minValue = min(B,min(G,R));
-			double S = (1 - 3.0*minValue / (R + G + B));
-			if ((R > Red &&R >= G && R >= B && S >((255 - R) * sat / Red))|| (B > Blue &&B >= G && B >= R && S >((255 - B) * sat / Blue))) Img.at<uchar>(i, j) = 255;
-			else Img.at<uchar>(i, j) = 0;
-		} 
-	medianBlur(Img, Img, 5);
-	dilate(Img, Img, Mat(5, 5, CV_8UC1));
-	Draw(inImg, Img);
-	return Img;
+void Draw(Mat Img, Point *pt, Armor armor) {
+	line(Img, pt[0], pt[2], COLOR, 2, 8, 0);
+	line(Img, pt[2], pt[3], COLOR, 2, 8, 0);
+	line(Img, pt[3], pt[1], COLOR, 2, 8, 0);
+	line(Img, pt[1], pt[0], COLOR, 2, 8, 0);
+	putText(Img, "v: " + to_string(armor.v), Point(armor.dx, armor.dy + 40), FONT_ITALIC, 1, COLOR, 2);
+	putText(Img, "d: " + to_string(armor.d), Point(armor.dx, armor.dy - 40), FONT_ITALIC, 1, COLOR, 2);
 }
-
-//Draw track rectangles on graphical pictures.
-void Draw(Mat &iptImg, Mat bImg){
-	vector<vector<Point>> topo;
-	findContours(bImg, topo, CV_RETR_EXTERNAL, CV_CHAIN_APPROX_NONE);
-	Point pt1, pt2;
-	float a = 0.4, b = 0.75, r;
-	float xmin1 = a * iptImg.cols, ymin1 = iptImg.rows, xmax1 = 0, ymax1 = 0;
-	float xmin2 = b * iptImg.cols, ymin2 = iptImg.rows, xmax2 = a * iptImg.cols, ymax2 = 0;
-	float xmin3 = iptImg.cols, ymin3 = iptImg.rows, xmax3 = b * iptImg.cols, ymax3 = 0;
-	Rect finalRect1, finalRect2, finalRect3, rect;
-	Point2f c;
-	vector<vector<Point> >::iterator iter = topo.begin();
-	while (iter != topo.end()) {
-		rect = boundingRect(*iter);
-		minEnclosingCircle(*iter, c, r);
-		if (rect.area() > 0) {
-			pt1.x = rect.x;
-			pt1.y = rect.y;
-			pt2.x = pt1.x + rect.width;
-			pt2.y = pt1.y + rect.height;
-			if (pt2.x < a*iptImg.cols) {
-				if (pt1.x < xmin1) xmin1 = pt1.x;
-				if (pt1.y < ymin1) ymin1 = pt1.y;
-				if (pt2.x > xmax1 && pt2.x < xmax2) xmax1 = pt2.x;
-				if (pt2.y > ymax1) ymax1 = pt2.y;
+void ArmorDetect(Mat & Img, vector<RotatedRect> ellipses, vector<Armor> & armors) {
+	RotatedRect pre, pos;
+	omp_set_num_threads(THREADS);
+#pragma omp parallel for
+	for (int i = 0; i < ellipses.size() - 1; ++i)
+		for (int j = i + 1; j < ellipses.size(); ++j) {
+			pre = ellipses[i];
+			pos = ellipses[j];
+			if ((abs(pre.angle - pos.angle) < ANGLE_THRE || 180 - abs(pre.angle - pos.angle) < ANGLE_THRE) && abs(pre.size.height - pos.size.height) / (pre.size.height + pos.size.height) < 0.05 && abs(pre.size.width - pos.size.width) / (pre.size.width + pos.size.width) < 0.05 && abs(pre.center.x - pos.center.x) / (pre.size.height + pos.size.height) > 0.5 && abs(pre.center.x - pos.center.x) / (pre.size.height + pos.size.height) < 3 && abs(pre.center.y - pos.center.y) / (pre.size.height + pos.size.height) < 0.3) {
+				Armor armor;
+				if (armors.size() > 0) armor.id = armors[armors.size() - 1].id + 1;
+				else armor.id = -1;
+				if (pre.center.x > pos.center.x) swap(pre, pos);
+				armor.w = pos.center.x - pre.center.x;
+				armor.h = pre.size.height + pos.size.height;
+				armor.d = 300 / (pre.size.height + pos.size.height);
+				if (tmpD < 0) tmpD = armor.d;
+				Point pt[4];
+				pt[0] = Point(pre.center.x - sin(pre.angle * PI / 180) * pre.size.height, pre.center.y + cos(pre.angle * PI / 180) * pre.size.height);
+				pt[1] = Point(pre.center.x + sin(pre.angle * PI / 180) * pre.size.height, pre.center.y - cos(pre.angle * PI / 180) * pre.size.height);
+				pt[2] = Point(pos.center.x - sin(pos.angle * PI / 180) * pos.size.height, pos.center.y + cos(pos.angle * PI / 180) * pos.size.height);
+				pt[3] = Point(pos.center.x + sin(pos.angle * PI / 180) * pos.size.height, pos.center.y - cos(pos.angle * PI / 180) * pos.size.height);
+				if (pt[0].y > pt[1].y) swap(pt[0], pt[1]);
+				if (pt[2].y > pt[3].y) swap(pt[2], pt[3]);
+				for (int k = 0; k < 4; ++k) {
+					armor.dx += pt[i].x / 4;
+					armor.dy += pt[i].y / 4;
+				}
+				if (armor.dx > 4000 || armor.dx < 1 || armor.dy>2000 || armor.dy < 1) continue;
+				//if(armors.size()>1)
+				armor.v = armor.d - tmpD;
+				printf("X: %f; Y: %f; D: %f; V: %f, preD: %f, curD: %f\n", armor.dx, armor.dy, armor.d, armor.v, tmpD, armor.d);
+				armors.push_back(armor);
+				tmpD = armor.d;
+				Draw(Img, pt, armor);
 			}
-			if (pt2.x < b*iptImg.cols&&pt2.x > a*iptImg.cols) {
-				if (pt1.x < xmin2 && pt1.x>xmin1) xmin2 = pt1.x;
-				if (pt1.y < ymin2) ymin2 = pt1.y;
-				if (pt2.x > xmax2 && pt2.x < xmax3) xmax2 = pt2.x;
-				if (pt2.y > ymax2) ymax2 = pt2.y;
-			}
-			if (pt2.x < iptImg.cols&&pt2.x > b*iptImg.cols) {
-				if (pt1.x < xmin3 && pt1.x>xmin2) xmin3 = pt1.x;
-				if (pt1.y < ymin3) ymin3 = pt1.y;
-				if (pt2.x > xmax3) xmax3 = pt2.x;
-				if (pt2.y > ymax3) ymax3 = pt2.y;
-			}
-			++iter;
 		}
-		else iter = topo.erase(iter);
+}
+int main(int argc, char **argv) {
+	Mat srcImg, dstImg, HSV;
+	VideoCapture cap = VideoCapture(PATH);
+	//cap.open(2);
+	cap >> srcImg;
+	while (srcImg.data) {
+		vector<Vec4i> tmp4I;
+		vector<vector<Point>> tmpCtr;
+		findContours(Proc(srcImg, dstImg, HSV), tmpCtr, tmp4I, CV_RETR_EXTERNAL, CV_CHAIN_APPROX_SIMPLE, Point(0, 0));
+		vector<RotatedRect> Elp;
+		omp_set_num_threads(THREADS);
+#pragma omp parallel for
+		for (int i = 0; i < tmpCtr.size(); ++i) {
+			int red = 0, blue = 0;
+			if (tmpCtr[i].size() >= 5) {
+				for (int j = 0; j < tmpCtr[i].size(); ++j)
+					if (HSV.at<Vec3b>(tmpCtr[i][j])[0] <= 60) ++red;
+					else if (HSV.at<Vec3b>(tmpCtr[i][j])[0] >= 180 && HSV.at<Vec3b>(tmpCtr[i][j])[0] <= 240) ++blue;
+					if ((bRED && red <= blue) || (!bRED && blue <= red)) continue;
+					RotatedRect tmp = fitEllipse((tmpCtr[i]));
+					float hw = tmp.size.height / tmp.size.width;
+					if ((tmp.angle < ANGLE_THRE || 180 - tmp.angle < ANGLE_THRE) && hw > 2 && hw < 4) Elp.push_back(tmp);
+			}
+		}
+		vector<Armor> armors;
+		ArmorDetect(dstImg, Elp, armors);
+		namedWindow("Result image", WINDOW_AUTOSIZE);
+		imshow("Result image", dstImg);
+		if (waitKey(20) == 10) break;
+		cap >> srcImg;
 	}
-	if (xmin1 == a * iptImg.cols&& ymin1 == iptImg.rows&&xmax1 == 0 && ymax1 == 0) xmin1 = ymin1 = xmax1 = ymax1 = 0;
-	if (xmin2 == b * iptImg.cols&& ymin2 == iptImg.rows&& xmax2 == a * iptImg.cols&& ymax2 == 0) xmin2 = ymin2 = xmax2 = ymax2 = 0;
-	if (xmin3 == iptImg.cols&&ymin3 == iptImg.rows&& xmax3 == b * iptImg.cols&& ymax3 == 0) xmin3 = ymin3 = xmax3 = ymax3 = 0;
-	finalRect1 = Rect(xmin1, ymin1, xmax1 - xmin1, ymax1 - ymin1);
-	finalRect2 = Rect(xmin2, ymin2, xmax2 - xmin2, ymax2 - ymin2);
-	finalRect3 = Rect(xmin3, ymin3, xmax3 - xmin3, ymax3 - ymin3);
-	rectangle(iptImg, finalRect1, Scalar(0, 255, 0));
-	rectangle(iptImg, finalRect2, Scalar(0, 255, 0));
-	rectangle(iptImg, finalRect3, Scalar(0, 255, 0));
-	imshow("Detection", iptImg);
 }
